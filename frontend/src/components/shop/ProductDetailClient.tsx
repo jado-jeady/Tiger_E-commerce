@@ -1,15 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  formatPrice,
-  lineTotal,
-  productSupportsBulk,
-  productSupportsRetail,
-  resolveUnitPrice,
-  stockLabel,
-  variantSupportsBulk,
-} from "@/lib/pricing";
+import { formatPrice, lineTotal, roundMoney, stockLabel } from "@/lib/pricing";
 import { resolveProductImage } from "@/lib/images";
 import { buildProductGallery } from "@/lib/product-media";
 import { variantDisplayImage } from "@/lib/strapi/mappers";
@@ -23,11 +15,12 @@ import {
 import ColorSwatches from "@/components/shop/ColorSwatches";
 import ProductGallery from "@/components/shop/ProductGallery";
 import StarRating from "@/components/shop/StarRating";
+import { useT } from "@/i18n/LocaleProvider";
+import { localizeOptionName } from "@/i18n/localize-label";
 import { useCartStore } from "@/store/cart-store";
 import type {
   ColorOption,
   GalleryItem,
-  PricingMode,
   Product,
   ProductVariant,
   RatingSummary,
@@ -42,19 +35,15 @@ export default function ProductDetailClient({
   product,
   ratingSummary,
 }: Props) {
+  const { t } = useT();
   const variants = product.variants ?? [];
   const axes = useMemo(() => getProductOptionAxes(variants), [variants]);
 
-  const canRetail = productSupportsRetail(product);
-  const canWholesale = productSupportsBulk(product);
-
-  const [mode, setMode] = useState<PricingMode>(
-    canRetail ? "retail" : "wholesale",
-  );
   const [selection, setSelection] = useState<Record<string, string>>(() =>
     initialSelection(variants, axes),
   );
   const [gallerySeek, setGallerySeek] = useState({ index: 0, token: 0 });
+  const [quantity, setQuantity] = useState(1);
 
   useEffect(() => {
     setSelection(initialSelection(variants, axes));
@@ -108,19 +97,13 @@ export default function ProductDetailClient({
     selection,
   );
 
-  const bulkMinimum = selectedVariant?.bulk_minimum ?? 10;
-
-  const [quantity, setQuantity] = useState(
-    mode === "wholesale" ? bulkMinimum : 1,
-  );
-
   const displayImage = resolveProductImage(
     variantDisplayImage(selectedVariant, product),
   );
 
-  const { unitPrice, isWholesale } = selectedVariant
-    ? resolveUnitPrice(mode, selectedVariant)
-    : { unitPrice: 0, isWholesale: false };
+  const unitPrice = selectedVariant
+    ? roundMoney(selectedVariant.per_piece_price)
+    : 0;
 
   const addItem = useCartStore((s) => s.addItem);
 
@@ -140,7 +123,7 @@ export default function ProductDetailClient({
       sku: selectedVariant.sku,
       quantity,
       unitPrice,
-      pricingMode: mode,
+      pricingMode: "retail",
     });
   };
 
@@ -175,13 +158,13 @@ export default function ProductDetailClient({
             </span>
             <span className="text-muted">
               ({ratingSummary.count}{" "}
-              {ratingSummary.count === 1 ? "review" : "reviews"})
+              {ratingSummary.count === 1 ? t("pdp.review") : t("pdp.reviews")})
             </span>
           </a>
         )}
         <p className="mt-2 text-sm text-muted">
-          {stockLabel(product.total_stock ?? 0)}
-          {selectedVariant && ` · Code: ${selectedVariant.sku}`}
+          {stockLabel(product.total_stock ?? 0, t)}
+          {selectedVariant && ` · ${t("pdp.code", { sku: selectedVariant.sku })}`}
         </p>
 
         {product.description && (
@@ -190,67 +173,11 @@ export default function ProductDetailClient({
           </p>
         )}
 
-        {canRetail && canWholesale && selectedVariant && (
-          <div className="mt-6 inline-flex rounded-lg border border-gray-3 bg-gray-1 p-1">
-            <button
-              type="button"
-              onClick={() => {
-                setMode("retail");
-                setQuantity(1);
-              }}
-              className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-                mode === "retail"
-                  ? "bg-surface text-dark shadow-sm"
-                  : "text-muted hover:text-dark"
-              }`}
-            >
-              Per piece
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("wholesale");
-                setQuantity(selectedVariant.bulk_minimum);
-              }}
-              className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-                mode === "wholesale"
-                  ? "bg-surface text-dark shadow-sm"
-                  : "text-muted hover:text-dark"
-              }`}
-            >
-              Buy many ({selectedVariant.bulk_minimum}+)
-            </button>
-          </div>
-        )}
-
-        {selectedVariant && (
-          <div className="mt-6 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-            <div>
-              <span className="text-xs text-muted">Per piece</span>
-              <p className="text-xl font-bold text-dark">
-                {formatPrice(selectedVariant.per_piece_price)}
-              </p>
-            </div>
-            {variantSupportsBulk(selectedVariant) && (
-              <div>
-                <span className="text-xs text-muted">
-                  Buy many ({selectedVariant.bulk_minimum}+)
-                </span>
-                <p className="text-xl font-bold text-brand">
-                  {formatPrice(selectedVariant.bulk_price!)}
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="mt-4 flex items-baseline gap-3">
+        <div className="mt-6 flex items-baseline gap-3">
           <span className="text-3xl font-bold text-brand">
             {formatPrice(unitPrice)}
           </span>
-          <span className="text-sm text-muted">
-            {isWholesale ? "price when buying many" : "per piece"}
-          </span>
+          <span className="text-sm text-muted">{t("pdp.perPiece")}</span>
         </div>
 
         {swatchAxis && colors.length > 0 && (
@@ -264,7 +191,9 @@ export default function ProductDetailClient({
 
         {selectAxes.map((axis) => (
           <div key={axis.code} className="mt-4">
-            <p className="mb-2 text-sm font-medium text-dark">{axis.name}</p>
+            <p className="mb-2 text-sm font-medium text-dark">
+              {localizeOptionName(axis.name, t)}
+            </p>
             <div className="flex flex-wrap gap-2">
               {axis.values.map((value) => {
                 const candidate = {
@@ -306,15 +235,11 @@ export default function ProductDetailClient({
         ))}
 
         <div className="mt-6">
-          <p className="mb-2 text-sm font-medium text-dark">Quantity</p>
+          <p className="mb-2 text-sm font-medium text-dark">{t("pdp.quantity")}</p>
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() =>
-                setQuantity((q) =>
-                  Math.max(mode === "wholesale" ? bulkMinimum : 1, q - 1),
-                )
-              }
+              onClick={() => setQuantity((q) => Math.max(1, q - 1))}
               className="flex h-10 w-10 items-center justify-center rounded-md border border-gray-3 text-lg"
             >
               −
@@ -330,7 +255,7 @@ export default function ProductDetailClient({
             </button>
             {selectedVariant && (
               <span className="text-xs text-muted">
-                {selectedVariant.stock_quantity} available
+                {t("pdp.available", { n: selectedVariant.stock_quantity })}
               </span>
             )}
           </div>
@@ -340,20 +265,12 @@ export default function ProductDetailClient({
           type="button"
           onClick={handleAddToCart}
           disabled={
-            !selectedVariant ||
-            selectedVariant.stock_quantity < quantity ||
-            (mode === "wholesale" && quantity < bulkMinimum)
+            !selectedVariant || selectedVariant.stock_quantity < quantity
           }
           className="btn-primary mt-8 w-full py-3 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Add to cart — {formatPrice(lineTotal(unitPrice, quantity))}
+          {t("pdp.addToCart", { price: formatPrice(lineTotal(unitPrice, quantity)) })}
         </button>
-
-        {mode === "wholesale" && quantity < bulkMinimum && (
-          <p className="mt-2 text-xs text-red-600">
-            Minimum order for lower price: {bulkMinimum} pieces
-          </p>
-        )}
       </div>
     </div>
   );

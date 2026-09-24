@@ -8,6 +8,9 @@
   let cache = {};
   let currentView = "home";
   let editing = null;
+  let orderRange = { from: "", to: "", status: "" };
+  let orderFilterKind = "";
+  const ORDER_STATUSES = ["placed", "paid", "pending", "completed", "cancelled"];
   let currentUser = null;
   let pvKeySeq = 0;
   const selectedIds = {
@@ -240,7 +243,7 @@
         api("/api/admin/dashboard"),
         api("/api/admin/products"),
         api("/api/admin/variants"),
-        api("/api/admin/orders"),
+        api(`/api/admin/orders${orderRangeQuery()}`),
         api("/api/admin/categories"),
         api("/api/admin/attributes"),
         api("/api/admin/attribute-sets"),
@@ -427,6 +430,101 @@
       }`;
   }
 
+  function orderRangeQuery() {
+    const params = new URLSearchParams();
+    if (orderRange.from) {
+      params.set("from", new Date(`${orderRange.from}T00:00:00`).toISOString());
+    }
+    if (orderRange.to) {
+      params.set("to", new Date(`${orderRange.to}T23:59:59.999`).toISOString());
+    }
+    if (orderRange.status) params.set("status", orderRange.status);
+    const query = params.toString();
+    return query ? `?${query}` : "";
+  }
+
+  function orderRangeLabel() {
+    const parts = [];
+    if (orderRange.status) parts.push(orderRange.status);
+    if (orderRange.from && orderRange.to) parts.push(`${orderRange.from} to ${orderRange.to}`);
+    else if (orderRange.from) parts.push(`from ${orderRange.from}`);
+    else if (orderRange.to) parts.push(`through ${orderRange.to}`);
+    return parts.join(" · ");
+  }
+
+  function orderDateFilters() {
+    const active = orderRange.from || orderRange.to || orderRange.status;
+    const kind = orderFilterKind;
+    return `<div class="order-filters">
+      <span class="filters-label">Filters</span>
+      <select id="orderFilterKind" aria-label="Filter by" onchange="setOrderFilterKind(this.value)">
+        <option value="" ${kind ? "" : "selected"}>Filter by…</option>
+        <option value="date" ${kind === "date" ? "selected" : ""}>Date</option>
+        <option value="status" ${kind === "status" ? "selected" : ""}>Status</option>
+      </select>
+      ${
+        kind === "date"
+          ? `<label class="date-field">From <input type="date" id="orderFrom" value="${esc(orderRange.from)}" /></label>
+             <span class="date-sep" aria-hidden="true">to</span>
+             <label class="date-field">To <input type="date" id="orderTo" value="${esc(orderRange.to)}" /></label>`
+          : ""
+      }
+      ${
+        kind === "status"
+          ? `<select id="orderStatusFilter" aria-label="Order status" onchange="applyOrderRange()">
+              <option value="" ${orderRange.status ? "" : "selected"}>Any status</option>
+              ${ORDER_STATUSES.map(
+                (s) => `<option value="${s}" ${orderRange.status === s ? "selected" : ""}>${s}</option>`,
+              ).join("")}
+            </select>`
+          : ""
+      }
+      ${kind === "date" ? `<button type="button" class="btn btn-secondary btn-sm" onclick="applyOrderRange()">Show</button>` : ""}
+      ${active ? `<button type="button" class="btn btn-secondary btn-sm" onclick="clearOrderRange()">Clear</button>` : ""}
+    </div>`;
+  }
+
+  async function setOrderFilterKind(kind) {
+    const had = orderRange.from || orderRange.to || orderRange.status;
+    orderFilterKind = kind;
+    orderRange = { from: "", to: "", status: "" };
+    if (had) {
+      await runSave(async () => {
+        await refreshAll();
+        if (currentView === "orders" && !editing) await render();
+      });
+      return;
+    }
+    const host = document.querySelector(".order-filters");
+    if (host) host.outerHTML = orderDateFilters();
+  }
+
+  async function applyOrderRange() {
+    const kind = $("#orderFilterKind")?.value || orderFilterKind;
+    const from = kind === "date" ? $("#orderFrom")?.value || "" : "";
+    const to = kind === "date" ? $("#orderTo")?.value || "" : "";
+    const status = kind === "status" ? $("#orderStatusFilter")?.value || "" : "";
+    if (from && to && from > to) {
+      toast("The start date must be on or before the end date.", "error");
+      return;
+    }
+    orderFilterKind = kind;
+    orderRange = { from, to, status };
+    await runSave(async () => {
+      await refreshAll();
+      if (currentView === "orders" && !editing) await render();
+    });
+  }
+
+  async function clearOrderRange() {
+    orderFilterKind = "";
+    orderRange = { from: "", to: "", status: "" };
+    await runSave(async () => {
+      await refreshAll();
+      if (currentView === "orders" && !editing) await render();
+    });
+  }
+
   function listToolbar(tbodyId, count, viewKey) {
     const bulk = BULK_DELETE[viewKey];
     const selected = bulk ? selectedIds[viewKey].size : 0;
@@ -435,6 +533,7 @@
         <div class="search"><span>⌕</span><input placeholder="Search…" oninput="filterTable(this.value,'${tbodyId}','${viewKey}')" /></div>
         <span class="muted" data-bulk-count="${viewKey}">${selected ? `${selected} selected` : `${count} entries found`}</span>
       </div>
+      ${viewKey === "orders" ? orderDateFilters() : ""}
       <div class="toolbar-right">
         ${
           bulk
@@ -533,7 +632,7 @@
           ])}
           <div class="full field"><label>Status</label>
             <select id="oStatus" class="strapi-input" onchange="setOrderStatus('${o.id}', this.value)">
-              ${["placed", "paid", "pending", "completed", "cancelled"]
+              ${ORDER_STATUSES
                 .map(
                   (s) =>
                     `<option value="${s}" ${o.orderStatus === s ? "selected" : ""}>${s}</option>`,
@@ -1561,6 +1660,9 @@
 
   Object.assign(window, {
     filterTable,
+    setOrderFilterKind,
+    applyOrderRange,
+    clearOrderRange,
     toggleRowSelect,
     toggleSelectVisible,
     deleteSelected,
@@ -2694,8 +2796,10 @@
           orderDetail(o);
         return;
       }
+      const range = orderRangeLabel();
+      const orderCount = cache.orders.length;
       root.innerHTML = `
-        ${header("Order", `${cache.orders.length} entries found`)}
+        ${header("Order", range ? `${orderCount} order${orderCount === 1 ? "" : "s"} ${range}` : `${orderCount} entries found`)}
         <div class="panel">
           ${listToolbar("ordersBody", cache.orders.length, "orders")}
           <table class="cm"><thead><tr><th>Reference</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th>Update</th></tr></thead>
@@ -2710,7 +2814,7 @@
               <td>${money(o.total)}</td>
               <td><span class="pill">${o.orderStatus}</span></td>
               <td><select class="strapi-input" style="width:auto" onclick="event.stopPropagation()" onchange="setOrderStatus('${o.id}', this.value)">
-                ${["placed", "paid", "pending", "completed", "cancelled"]
+                ${ORDER_STATUSES
                   .map(
                     (s) =>
                       `<option value="${s}" ${o.orderStatus === s ? "selected" : ""}>${s}</option>`,

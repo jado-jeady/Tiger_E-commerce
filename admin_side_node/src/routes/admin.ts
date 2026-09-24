@@ -1180,11 +1180,43 @@ export async function registerAdminRoutes(app: FastifyInstance) {
   );
 
   // —— Orders ——
-  app.get("/api/admin/orders", { preHandler: requireAdmin }, async () => {
+  app.get("/api/admin/orders", { preHandler: requireAdmin }, async (request, reply) => {
+    const query = z
+      .object({
+        from: z.string().optional(),
+        to: z.string().optional(),
+        status: z.enum(["placed", "paid", "pending", "completed", "cancelled"]).optional(),
+      })
+      .parse(request.query);
+    const createdAt: { gte?: Date; lte?: Date } = {};
+    if (query.from) {
+      const from = new Date(query.from);
+      if (Number.isNaN(from.getTime())) {
+        return reply.code(400).send({ error: "The start date is not valid." });
+      }
+      createdAt.gte = from;
+    }
+    if (query.to) {
+      const to = new Date(query.to);
+      if (Number.isNaN(to.getTime())) {
+        return reply.code(400).send({ error: "The end date is not valid." });
+      }
+      createdAt.lte = to;
+    }
+    if (createdAt.gte && createdAt.lte && createdAt.gte > createdAt.lte) {
+      return reply.code(400).send({ error: "The start date must be on or before the end date." });
+    }
+    const ranged = Boolean(createdAt.gte || createdAt.lte || query.status);
     const rows = await prisma.order.findMany({
+      where: ranged
+        ? {
+            ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
+            ...(query.status ? { orderStatus: query.status } : {}),
+          }
+        : undefined,
       include: { items: true },
       orderBy: { createdAt: "desc" },
-      take: 200,
+      take: ranged ? 2000 : 200,
     });
     return { data: rows };
   });

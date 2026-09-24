@@ -63,6 +63,14 @@ function notFoundOrRethrow(reply: { code: (status: number) => { send: (body: unk
   throw error;
 }
 
+const bulkIdsBody = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(500),
+});
+
+function uniqueIds(ids: string[]) {
+  return [...new Set(ids)];
+}
+
 function uniqueCodes(labels: string[]): string[] {
   const used = new Set<string>();
   return labels.map((label) => {
@@ -428,6 +436,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post(
+    "/api/admin/categories/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const result = await prisma.category.deleteMany({ where: { id: { in: ids } } });
+      return { deleted: result.count, deletedIds: ids, failed: [] };
+    },
+  );
+
   // —— Options / values / kinds ——
   app.get("/api/admin/attributes", { preHandler: requireAdmin }, async () => {
     const rows = await prisma.attribute.findMany({
@@ -672,6 +690,56 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post(
+    "/api/admin/attribute-sets/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request, reply) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const sets = await prisma.attributeSet.findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          name: true,
+          _count: { select: { categories: true } },
+        },
+      });
+      const found = new Map(sets.map((row) => [row.id, row]));
+      const failed: { id: string; name: string; error: string }[] = [];
+      const ok: string[] = [];
+      for (const id of ids) {
+        const row = found.get(id);
+        if (!row) {
+          failed.push({ id, name: id, error: "That product kind was not found." });
+          continue;
+        }
+        if (row._count.categories > 0) {
+          failed.push({
+            id,
+            name: row.name,
+            error: "Reassign or delete categories that use this product kind first.",
+          });
+          continue;
+        }
+        ok.push(id);
+      }
+      if (ok.length) {
+        await prisma.attributeSet.deleteMany({ where: { id: { in: ok } } });
+      }
+      if (!ok.length) {
+        const error =
+          failed.length === 1
+            ? `${failed[0].name}: ${failed[0].error}`
+            : `Could not delete ${failed.map((row) => row.name).join(", ")}. Reassign or delete categories that use those product kinds first.`;
+        return reply.code(400).send({ error, deleted: 0, deletedIds: [], failed });
+      }
+      return {
+        deleted: ok.length,
+        deletedIds: ok,
+        failed,
+      };
+    },
+  );
+
   // —— Products ——
   app.get("/api/admin/products", { preHandler: requireAdmin }, async () => {
     const rows = await prisma.product.findMany({
@@ -786,6 +854,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return notFoundOrRethrow(reply, e);
     }
   });
+
+  app.post(
+    "/api/admin/products/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const result = await prisma.product.deleteMany({ where: { id: { in: ids } } });
+      return { deleted: result.count, deletedIds: ids, failed: [] };
+    },
+  );
 
   // —— Variants ——
   app.get("/api/admin/variants", { preHandler: requireAdmin }, async () => {
@@ -1088,6 +1166,18 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return notFoundOrRethrow(reply, e);
     }
   });
+
+  app.post(
+    "/api/admin/variants/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const result = await prisma.productVariant.deleteMany({
+        where: { id: { in: ids } },
+      });
+      return { deleted: result.count, deletedIds: ids, failed: [] };
+    },
+  );
 
   // —— Orders ——
   app.get("/api/admin/orders", { preHandler: requireAdmin }, async () => {

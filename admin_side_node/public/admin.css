@@ -312,6 +312,22 @@ table.cm td {
 table.cm tr { cursor: default; }
 table.cm tbody tr:hover td { background: #fafafd; }
 table.cm tbody tr.clickable { cursor: pointer; }
+table.cm th.select-cell,
+table.cm td.select-cell {
+  width: 2.75rem;
+  padding-right: .25rem;
+  text-align: center;
+}
+table.cm .row-select,
+table.cm .select-all {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--primary600);
+}
+table.cm tbody tr.is-selected td { background: var(--primary100); }
+table.cm tbody tr.is-selected:hover td { background: var(--primary200); }
 .order-list li.clickable,
 .move-list li.clickable,
 .stock-list li.clickable { cursor: pointer; }

@@ -10,6 +10,38 @@
   let editing = null;
   let currentUser = null;
   let pvKeySeq = 0;
+  const selectedIds = {
+    products: new Set(),
+    variants: new Set(),
+    categories: new Set(),
+    kinds: new Set(),
+  };
+  const BULK_DELETE = {
+    products: {
+      url: "/api/admin/products/bulk-delete",
+      body: "productsBody",
+      confirm: (n) => `Delete ${n} product${n === 1 ? "" : "s"} and their variants?`,
+      done: (n) => `Deleted ${n} product${n === 1 ? "" : "s"}`,
+    },
+    variants: {
+      url: "/api/admin/variants/bulk-delete",
+      body: "variantsBody",
+      confirm: (n) => `Delete ${n} variant${n === 1 ? "" : "s"}?`,
+      done: (n) => `Deleted ${n} variant${n === 1 ? "" : "s"}`,
+    },
+    categories: {
+      url: "/api/admin/categories/bulk-delete",
+      body: "categoriesBody",
+      confirm: (n) => `Delete ${n} categor${n === 1 ? "y" : "ies"}?`,
+      done: (n) => `Deleted ${n} categor${n === 1 ? "y" : "ies"}`,
+    },
+    kinds: {
+      url: "/api/admin/attribute-sets/bulk-delete",
+      body: "kindsBody",
+      confirm: (n) => `Delete ${n} product kind${n === 1 ? "" : "s"}?`,
+      done: (n) => `Deleted ${n} product kind${n === 1 ? "" : "s"}`,
+    },
+  };
 
   const $ = (sel) => document.querySelector(sel);
   const esc = (s) =>
@@ -233,6 +265,102 @@
       stock: cache.stock || [],
       prices: cache.prices || [],
     };
+    pruneSelection("products", cache.products);
+    pruneSelection("variants", cache.variants);
+    pruneSelection("categories", cache.categories);
+    pruneSelection("kinds", cache.sets);
+  }
+
+  function pruneSelection(view, rows) {
+    const live = new Set((rows || []).map((row) => row.id));
+    for (const id of selectedIds[view]) {
+      if (!live.has(id)) selectedIds[view].delete(id);
+    }
+  }
+
+  function selectCell(view, id) {
+    const checked = selectedIds[view].has(id) ? "checked" : "";
+    return `<td class="select-cell" onclick="event.stopPropagation()"><input class="row-select" type="checkbox" value="${esc(id)}" ${checked} aria-label="Select row" onchange="toggleRowSelect('${view}', this.value, this.checked)" /></td>`;
+  }
+
+  function selectAllCell(view) {
+    return `<th class="select-cell"><input class="select-all" type="checkbox" data-select-all="${view}" aria-label="Select all visible rows" onchange="toggleSelectVisible('${view}', this.checked)" /></th>`;
+  }
+
+  function visibleRows(view) {
+    const body = document.getElementById(BULK_DELETE[view].body);
+    if (!body) return [];
+    return [...body.querySelectorAll("tr")].filter((tr) => tr.style.display !== "none" && tr.querySelector(".row-select"));
+  }
+
+  function toggleRowSelect(view, id, checked) {
+    if (checked) selectedIds[view].add(id);
+    else selectedIds[view].delete(id);
+    const row = document.querySelector(`#${BULK_DELETE[view].body} .row-select[value="${CSS.escape(id)}"]`)?.closest("tr");
+    row?.classList.toggle("is-selected", checked);
+    syncBulkUi(view);
+  }
+
+  function toggleSelectVisible(view, checked) {
+    for (const tr of visibleRows(view)) {
+      const box = tr.querySelector(".row-select");
+      if (!box) continue;
+      box.checked = checked;
+      tr.classList.toggle("is-selected", checked);
+      if (checked) selectedIds[view].add(box.value);
+      else selectedIds[view].delete(box.value);
+    }
+    syncBulkUi(view);
+  }
+
+  function syncBulkUi(view) {
+    const spec = BULK_DELETE[view];
+    if (!spec) return;
+    const set = selectedIds[view];
+    const rows = visibleRows(view);
+    const selectedVisible = rows.filter((tr) => tr.querySelector(".row-select")?.checked).length;
+    const all = document.querySelector(`[data-select-all="${view}"]`);
+    if (all) {
+      all.checked = rows.length > 0 && selectedVisible === rows.length;
+      all.indeterminate = selectedVisible > 0 && selectedVisible < rows.length;
+    }
+    const count = document.querySelector(`[data-bulk-count="${view}"]`);
+    if (count) {
+      const total = document.querySelectorAll(`#${spec.body} .row-select`).length;
+      count.textContent = set.size
+        ? `${set.size} selected`
+        : `${total} entries found`;
+    }
+    const button = document.querySelector(`[data-bulk-delete="${view}"]`);
+    if (button) button.hidden = set.size === 0;
+  }
+
+  async function deleteSelected(view) {
+    const spec = BULK_DELETE[view];
+    const ids = [...selectedIds[view]];
+    if (!spec || !ids.length) return;
+    if (!confirm(spec.confirm(ids.length))) return;
+    await runSave(async () => {
+      const result = await api(spec.url, {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      });
+      const failed = new Set((result.failed || []).map((row) => row.id));
+      for (const id of result.deletedIds || []) {
+        if (!failed.has(id)) selectedIds[view].delete(id);
+      }
+      await refreshAll();
+      const blocked = result.failed || [];
+      if (blocked.length && result.deleted) {
+        toast(
+          `Deleted ${result.deleted}. Still in use: ${blocked.map((row) => row.name).join(", ")}`,
+          "error",
+        );
+      } else if (result.deleted) {
+        toast(spec.done(result.deleted));
+      }
+      if (currentView === view && !editing) await render();
+    });
   }
 
   async function login() {
@@ -300,12 +428,21 @@
   }
 
   function listToolbar(tbodyId, count, viewKey) {
+    const bulk = BULK_DELETE[viewKey];
+    const selected = bulk ? selectedIds[viewKey].size : 0;
     return `<div class="panel-toolbar">
       <div class="toolbar-left">
-        <div class="search"><span>⌕</span><input placeholder="Search…" oninput="filterTable(this.value,'${tbodyId}')" /></div>
-        <span class="muted">${count} entries found</span>
+        <div class="search"><span>⌕</span><input placeholder="Search…" oninput="filterTable(this.value,'${tbodyId}','${viewKey}')" /></div>
+        <span class="muted" data-bulk-count="${viewKey}">${selected ? `${selected} selected` : `${count} entries found`}</span>
       </div>
-      <div class="toolbar-right">${transferBar(viewKey)}</div>
+      <div class="toolbar-right">
+        ${
+          bulk
+            ? `<button type="button" class="btn btn-danger btn-sm" data-bulk-delete="${viewKey}" ${selected ? "" : "hidden"} onclick="deleteSelected('${viewKey}')">Delete selected</button>`
+            : ""
+        }
+        ${transferBar(viewKey)}
+      </div>
     </div>`;
   }
 
@@ -553,11 +690,12 @@
     </aside>`;
   }
 
-  function filterTable(q, tbodyId) {
+  function filterTable(q, tbodyId, viewKey) {
     const needle = q.trim().toLowerCase();
     document.querySelectorAll(`#${tbodyId} tr`).forEach((tr) => {
       tr.style.display = !needle || tr.textContent.toLowerCase().includes(needle) ? "" : "none";
     });
+    if (viewKey && BULK_DELETE[viewKey]) syncBulkUi(viewKey);
   }
 
   async function reasonPrompt(message) {
@@ -1423,6 +1561,9 @@
 
   Object.assign(window, {
     filterTable,
+    toggleRowSelect,
+    toggleSelectVisible,
+    deleteSelected,
     navigate,
     saveProduct,
     deleteProduct,
@@ -2447,11 +2588,12 @@
         ${header("Product", `${cache.products.length} entries found`, `<button class="btn btn-primary" onclick="newProduct()">Create new entry</button>`)}
         <div class="panel">
           ${listToolbar("productsBody", cache.products.length, "products")}
-          <table class="cm"><thead><tr><th>Name</th><th>Category</th><th>Variants</th><th>Status</th></tr></thead>
+          <table class="cm"><thead><tr>${selectAllCell("products")}<th>Name</th><th>Category</th><th>Variants</th><th>Status</th></tr></thead>
           <tbody id="productsBody">
             ${cache.products
               .map(
-                (p) => `<tr class="clickable" onclick="editProduct('${p.id}')">
+                (p) => `<tr class="clickable${selectedIds.products.has(p.id) ? " is-selected" : ""}" onclick="editProduct('${p.id}')">
+              ${selectCell("products", p.id)}
               <td><strong>${esc(p.name)}</strong></td>
               <td>${esc(p.category?.name || "—")}${p.attribute_set?.name || p.category?.attribute_set?.name ? ` · ${esc(p.attribute_set?.name || p.category?.attribute_set?.name)}` : ""}</td>
               <td>${p.variants?.length || 0}</td>
@@ -2461,6 +2603,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("products");
       return;
     }
 
@@ -2477,7 +2620,7 @@
         ${header("Product variant", `${cache.variants.length} entries found`, `<button class="btn btn-primary" onclick="newVariant()">Create new entry</button>`)}
         <div class="panel">
           ${listToolbar("variantsBody", cache.variants.length, "variants")}
-          <table class="cm"><thead><tr><th>Item code</th><th>Product</th><th>Price</th><th>Stock</th><th>Options</th></tr></thead>
+          <table class="cm"><thead><tr>${selectAllCell("variants")}<th>Item code</th><th>Product</th><th>Price</th><th>Stock</th><th>Options</th></tr></thead>
           <tbody id="variantsBody">
             ${cache.variants
               .map((v) => {
@@ -2488,7 +2631,8 @@
                     .join(" · ") ||
                   [v.size, v.color].filter(Boolean).join(" · ") ||
                   "—";
-                return `<tr class="clickable" onclick="editVariant('${v.id}')">
+                return `<tr class="clickable${selectedIds.variants.has(v.id) ? " is-selected" : ""}" onclick="editVariant('${v.id}')">
+                ${selectCell("variants", v.id)}
                 <td><strong>${esc(v.itemCode)}</strong></td>
                 <td>${esc(v.product?.name || "")}</td>
                 <td>${v.priceForOne}</td>
@@ -2499,6 +2643,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("variants");
       return;
     }
 
@@ -2514,11 +2659,12 @@
         ${header("Category", `${cache.categories.length} entries found`, `<button class="btn btn-primary" onclick="newCategory()">Create new entry</button>`)}
         <div class="panel">
           ${listToolbar("categoriesBody", cache.categories.length, "categories")}
-          <table class="cm"><thead><tr><th>Name</th><th>Kind</th><th>Position</th><th>Status</th></tr></thead>
+          <table class="cm"><thead><tr>${selectAllCell("categories")}<th>Name</th><th>Kind</th><th>Position</th><th>Status</th></tr></thead>
           <tbody id="categoriesBody">
             ${cache.categories
               .map(
-                (c) => `<tr class="clickable" onclick="editCategory('${c.id}')">
+                (c) => `<tr class="clickable${selectedIds.categories.has(c.id) ? " is-selected" : ""}" onclick="editCategory('${c.id}')">
+              ${selectCell("categories", c.id)}
               <td><strong>${esc(c.name)}</strong></td>
               <td>${esc(kindNameForCategory(c) || "—")}</td>
               <td>${c.listPosition}</td>
@@ -2528,6 +2674,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("categories");
       return;
     }
 
@@ -2623,12 +2770,13 @@
       root.innerHTML = `
         ${header("Product kind", `${cache.sets.length} entries found`, `<button class="btn btn-primary" onclick="newKind()">Create new entry</button>`)}
         <div class="panel">
-          <div class="panel-toolbar"><div class="toolbar-left"><div class="search"><span>⌕</span><input placeholder="Search…" oninput="filterTable(this.value,'kindsBody')" /></div></div></div>
-          <table class="cm"><thead><tr><th>Name</th><th>Code</th><th>Options</th></tr></thead>
+          ${listToolbar("kindsBody", cache.sets.length, "kinds")}
+          <table class="cm"><thead><tr>${selectAllCell("kinds")}<th>Name</th><th>Code</th><th>Options</th></tr></thead>
           <tbody id="kindsBody">
             ${cache.sets
               .map(
-                (s) => `<tr class="clickable" onclick="editKind('${s.id}')">
+                (s) => `<tr class="clickable${selectedIds.kinds.has(s.id) ? " is-selected" : ""}" onclick="editKind('${s.id}')">
+              ${selectCell("kinds", s.id)}
               <td><strong>${esc(s.name)}</strong></td>
               <td>${esc(s.code)}</td>
               <td>${(s.attributes || []).map((m) => esc(m.attribute?.name)).filter(Boolean).join(", ")}</td>
@@ -2637,6 +2785,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("kinds");
       return;
     }
 

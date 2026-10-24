@@ -7,7 +7,12 @@ import { getCategories, getProducts } from "@/lib/products";
 import { getRatingSummaries } from "@/lib/reviews";
 
 type Props = {
-  searchParams: Promise<{ category?: string; q?: string; new?: string }>;
+  searchParams: Promise<{
+    category?: string;
+    kind?: string;
+    q?: string;
+    new?: string;
+  }>;
 };
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -21,24 +26,31 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function ShopPage({ searchParams }: Props) {
   const params = await searchParams;
   const categorySlug = params.category?.trim() || undefined;
+  const kindCode = categorySlug ? undefined : params.kind?.trim() || undefined;
   const query = params.q?.trim() || undefined;
   const newOnly = params.new === "1" || params.new === "true";
   const { t } = await getTranslator();
 
   const [products, categories, ratings] = await Promise.all([
-    getProducts({ categorySlug, query, newOnly }),
+    getProducts({ categorySlug, kindCode, query, newOnly }),
     getCategories(),
     getRatingSummaries(),
   ]);
 
   const activeCategory = categories.find((cat) => cat.slug === categorySlug);
+  const activeKind = kindCode
+    ? categories.find((cat) => cat.attribute_set?.code === kindCode)
+        ?.attribute_set
+    : null;
   const pageTitle = query
     ? t("shop.resultsFor", { q: query })
     : activeCategory
       ? activeCategory.name
-      : newOnly
-        ? t("shop.newArrivals")
-        : t("shop.all");
+      : activeKind
+        ? activeKind.name
+        : newOnly
+          ? t("shop.newArrivals")
+          : t("shop.all");
   const pageDescription = query
     ? t("shop.matching", { q: query })
     : activeCategory
@@ -48,9 +60,11 @@ export default async function ShopPage({ searchParams }: Props) {
             kind: activeCategory.attribute_set.name,
           })
         : t("shop.inCategory", { name: activeCategory.name })
-      : newOnly
-        ? t("shop.latestPieces")
-        : t("shop.pickOptions");
+      : activeKind
+        ? t("shop.inKind", { name: activeKind.name })
+        : newOnly
+          ? t("shop.latestPieces")
+          : t("shop.pickOptions");
 
   return (
     <div className="container-custom py-10">
@@ -59,6 +73,15 @@ export default async function ShopPage({ searchParams }: Props) {
           <p className="text-xs font-semibold uppercase tracking-wider text-brand">
             {t("shop.eyebrow")}
           </p>
+          {activeKind && !activeCategory && !query && (
+            <p className="mt-2 text-xs font-medium text-body">
+              <span className="font-semibold uppercase tracking-wider text-muted">
+                {t("shop.kind")}
+              </span>
+              <span className="mx-1.5 text-gray-3">·</span>
+              {activeKind.name}
+            </p>
+          )}
           {activeCategory?.attribute_set?.name && !query && (
             <p className="mt-2 text-xs font-medium text-body">
               <span className="font-semibold uppercase tracking-wider text-muted">
@@ -83,11 +106,19 @@ export default async function ShopPage({ searchParams }: Props) {
             {products.length === 1 ? t("shop.product") : t("shop.products")}
             {activeCategory && !query
               ? ` ${t("shop.inName", { name: activeCategory.name })}`
-              : ""}
+              : activeKind && !query
+                ? ` ${t("shop.inName", { name: activeKind.name })}`
+                : ""}
           </p>
           {query && (
             <Link
-              href={categorySlug ? `/shop?category=${categorySlug}` : "/shop"}
+              href={
+                categorySlug
+                  ? `/shop?category=${categorySlug}`
+                  : kindCode
+                    ? `/shop?kind=${encodeURIComponent(kindCode)}`
+                    : "/shop"
+              }
               className="mt-2 inline-flex text-sm font-medium text-brand hover:text-brand-dark"
             >
               {t("shop.clearSearch")}
@@ -100,6 +131,7 @@ export default async function ShopPage({ searchParams }: Props) {
         <ShopCategoryNav
           categories={categories}
           activeSlug={categorySlug}
+          activeKindCode={kindCode}
           searchQuery={query}
         />
 
@@ -114,9 +146,11 @@ export default async function ShopPage({ searchParams }: Props) {
                   ? t("shop.noMatchHint", { q: query })
                   : activeCategory
                     ? t("shop.noProductsIn", { name: activeCategory.name })
-                    : t("shop.checkBack")}
+                    : activeKind
+                      ? t("shop.noProductsIn", { name: activeKind.name })
+                      : t("shop.checkBack")}
               </p>
-              {(activeCategory || query) && (
+              {(activeCategory || activeKind || query) && (
                 <Link href="/shop" className="btn-primary mt-6 inline-flex">
                   {t("shop.viewAll")}
                 </Link>

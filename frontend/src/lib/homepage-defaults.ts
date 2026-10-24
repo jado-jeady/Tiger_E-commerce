@@ -49,7 +49,7 @@ export const defaultHomepageContent: HomepageContent = {
       icon: "mark",
     },
   ],
-  categoriesTitle: "Browse by Category",
+  categoriesTitle: "Browse by Kind",
   newArrivalsTitle: "New Arrivals",
   newArrivalsLimit: 8,
   promoBanners: [

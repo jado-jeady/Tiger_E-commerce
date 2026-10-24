@@ -1189,7 +1189,7 @@
     return {
       hero_secondary_cta: "Bulk pricing",
       hero_secondary_href: "/wholesale",
-      categories_title: "Browse by Category",
+      categories_title: "Browse by Kind",
       new_arrivals_title: "New Arrivals",
       new_arrivals_limit: 8,
       featured_title: "Featured",
@@ -1359,7 +1359,7 @@
           <h2>Section titles</h2>
           <p class="muted">Headings and how many products to show.</p>
           <div class="form-grid">
-            <div class="full field"><label>Categories title</label><input id="hpCatTitle" value="${esc(hp.categories_title || "")}" /></div>
+            <div class="full field"><label>Kinds title</label><input id="hpCatTitle" value="${esc(hp.categories_title || "")}" /></div>
             <div class="field"><label>New arrivals title</label><input id="hpNewTitle" value="${esc(hp.new_arrivals_title || "")}" /></div>
             <div class="field"><label>New arrivals limit</label><input id="hpNewLimit" type="number" min="1" value="${esc(hp.new_arrivals_limit ?? 8)}" /></div>
             <div class="field"><label>Featured title</label><input id="hpFeatTitle" value="${esc(hp.featured_title || "")}" /></div>

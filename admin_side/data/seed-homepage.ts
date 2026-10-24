@@ -37,7 +37,7 @@ export type SeedHomepageScalars = {
 export const seedHomepageScalars: SeedHomepageScalars = {
   hero_secondary_cta: "Bulk pricing",
   hero_secondary_href: "/wholesale",
-  categories_title: "Browse by Category",
+  categories_title: "Browse by Kind",
   new_arrivals_title: "New Arrivals",
   new_arrivals_limit: 8,
   featured_title: "Featured",

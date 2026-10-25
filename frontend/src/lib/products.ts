@@ -18,6 +18,7 @@ function filterProducts(
   options?: {
     featured?: boolean;
     categorySlug?: string;
+    kindCode?: string;
     limit?: number;
     newOnly?: boolean;
     query?: string;
@@ -28,6 +29,14 @@ function filterProducts(
   if (options?.newOnly) items = items.filter((p) => p.is_new);
   if (options?.categorySlug) {
     items = items.filter((p) => p.category?.slug === options.categorySlug);
+  }
+  if (options?.kindCode) {
+    const code = options.kindCode;
+    items = items.filter(
+      (p) =>
+        p.attribute_set?.code === code ||
+        p.category?.attribute_set?.code === code,
+    );
   }
   if (options?.query) {
     const q = options.query.trim().toLowerCase();
@@ -54,6 +63,7 @@ function filterProducts(
 function filterMockProducts(options?: {
   featured?: boolean;
   categorySlug?: string;
+  kindCode?: string;
   limit?: number;
   newOnly?: boolean;
   query?: string;
@@ -63,6 +73,14 @@ function filterMockProducts(options?: {
   if (options?.newOnly) items = items.filter((p) => p.is_new);
   if (options?.categorySlug) {
     items = getMockProductsByCategory(options.categorySlug);
+  }
+  if (options?.kindCode) {
+    const code = options.kindCode;
+    items = items.filter(
+      (p) =>
+        p.attribute_set?.code === code ||
+        p.category?.attribute_set?.code === code,
+    );
   }
   if (options?.query) {
     const q = options.query.trim().toLowerCase();
@@ -121,6 +139,7 @@ export async function getCategories(): Promise<Category[]> {
 export async function getProducts(options?: {
   featured?: boolean;
   categorySlug?: string;
+  kindCode?: string;
   limit?: number;
   query?: string;
   newOnly?: boolean;

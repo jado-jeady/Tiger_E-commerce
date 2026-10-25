@@ -8,8 +8,43 @@
   let cache = {};
   let currentView = "home";
   let editing = null;
+  let orderRange = { from: "", to: "", status: "" };
+  let orderFilterKind = "";
+  const ORDER_STATUSES = ["placed", "paid", "pending", "completed", "cancelled"];
   let currentUser = null;
   let pvKeySeq = 0;
+  const selectedIds = {
+    products: new Set(),
+    variants: new Set(),
+    categories: new Set(),
+    kinds: new Set(),
+  };
+  const BULK_DELETE = {
+    products: {
+      url: "/api/admin/products/bulk-delete",
+      body: "productsBody",
+      confirm: (n) => `Delete ${n} product${n === 1 ? "" : "s"} and their variants?`,
+      done: (n) => `Deleted ${n} product${n === 1 ? "" : "s"}`,
+    },
+    variants: {
+      url: "/api/admin/variants/bulk-delete",
+      body: "variantsBody",
+      confirm: (n) => `Delete ${n} variant${n === 1 ? "" : "s"}?`,
+      done: (n) => `Deleted ${n} variant${n === 1 ? "" : "s"}`,
+    },
+    categories: {
+      url: "/api/admin/categories/bulk-delete",
+      body: "categoriesBody",
+      confirm: (n) => `Delete ${n} categor${n === 1 ? "y" : "ies"}?`,
+      done: (n) => `Deleted ${n} categor${n === 1 ? "y" : "ies"}`,
+    },
+    kinds: {
+      url: "/api/admin/attribute-sets/bulk-delete",
+      body: "kindsBody",
+      confirm: (n) => `Delete ${n} product kind${n === 1 ? "" : "s"}?`,
+      done: (n) => `Deleted ${n} product kind${n === 1 ? "" : "s"}`,
+    },
+  };
 
   const $ = (sel) => document.querySelector(sel);
   const esc = (s) =>
@@ -208,7 +243,7 @@
         api("/api/admin/dashboard"),
         api("/api/admin/products"),
         api("/api/admin/variants"),
-        api("/api/admin/orders"),
+        api(`/api/admin/orders${orderRangeQuery()}`),
         api("/api/admin/categories"),
         api("/api/admin/attributes"),
         api("/api/admin/attribute-sets"),
@@ -233,6 +268,102 @@
       stock: cache.stock || [],
       prices: cache.prices || [],
     };
+    pruneSelection("products", cache.products);
+    pruneSelection("variants", cache.variants);
+    pruneSelection("categories", cache.categories);
+    pruneSelection("kinds", cache.sets);
+  }
+
+  function pruneSelection(view, rows) {
+    const live = new Set((rows || []).map((row) => row.id));
+    for (const id of selectedIds[view]) {
+      if (!live.has(id)) selectedIds[view].delete(id);
+    }
+  }
+
+  function selectCell(view, id) {
+    const checked = selectedIds[view].has(id) ? "checked" : "";
+    return `<td class="select-cell" onclick="event.stopPropagation()"><input class="row-select" type="checkbox" value="${esc(id)}" ${checked} aria-label="Select row" onchange="toggleRowSelect('${view}', this.value, this.checked)" /></td>`;
+  }
+
+  function selectAllCell(view) {
+    return `<th class="select-cell"><input class="select-all" type="checkbox" data-select-all="${view}" aria-label="Select all visible rows" onchange="toggleSelectVisible('${view}', this.checked)" /></th>`;
+  }
+
+  function visibleRows(view) {
+    const body = document.getElementById(BULK_DELETE[view].body);
+    if (!body) return [];
+    return [...body.querySelectorAll("tr")].filter((tr) => tr.style.display !== "none" && tr.querySelector(".row-select"));
+  }
+
+  function toggleRowSelect(view, id, checked) {
+    if (checked) selectedIds[view].add(id);
+    else selectedIds[view].delete(id);
+    const row = document.querySelector(`#${BULK_DELETE[view].body} .row-select[value="${CSS.escape(id)}"]`)?.closest("tr");
+    row?.classList.toggle("is-selected", checked);
+    syncBulkUi(view);
+  }
+
+  function toggleSelectVisible(view, checked) {
+    for (const tr of visibleRows(view)) {
+      const box = tr.querySelector(".row-select");
+      if (!box) continue;
+      box.checked = checked;
+      tr.classList.toggle("is-selected", checked);
+      if (checked) selectedIds[view].add(box.value);
+      else selectedIds[view].delete(box.value);
+    }
+    syncBulkUi(view);
+  }
+
+  function syncBulkUi(view) {
+    const spec = BULK_DELETE[view];
+    if (!spec) return;
+    const set = selectedIds[view];
+    const rows = visibleRows(view);
+    const selectedVisible = rows.filter((tr) => tr.querySelector(".row-select")?.checked).length;
+    const all = document.querySelector(`[data-select-all="${view}"]`);
+    if (all) {
+      all.checked = rows.length > 0 && selectedVisible === rows.length;
+      all.indeterminate = selectedVisible > 0 && selectedVisible < rows.length;
+    }
+    const count = document.querySelector(`[data-bulk-count="${view}"]`);
+    if (count) {
+      const total = document.querySelectorAll(`#${spec.body} .row-select`).length;
+      count.textContent = set.size
+        ? `${set.size} selected`
+        : `${total} entries found`;
+    }
+    const button = document.querySelector(`[data-bulk-delete="${view}"]`);
+    if (button) button.hidden = set.size === 0;
+  }
+
+  async function deleteSelected(view) {
+    const spec = BULK_DELETE[view];
+    const ids = [...selectedIds[view]];
+    if (!spec || !ids.length) return;
+    if (!confirm(spec.confirm(ids.length))) return;
+    await runSave(async () => {
+      const result = await api(spec.url, {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      });
+      const failed = new Set((result.failed || []).map((row) => row.id));
+      for (const id of result.deletedIds || []) {
+        if (!failed.has(id)) selectedIds[view].delete(id);
+      }
+      await refreshAll();
+      const blocked = result.failed || [];
+      if (blocked.length && result.deleted) {
+        toast(
+          `Deleted ${result.deleted}. Still in use: ${blocked.map((row) => row.name).join(", ")}`,
+          "error",
+        );
+      } else if (result.deleted) {
+        toast(spec.done(result.deleted));
+      }
+      if (currentView === view && !editing) await render();
+    });
   }
 
   async function login() {
@@ -299,13 +430,118 @@
       }`;
   }
 
+  function orderRangeQuery() {
+    const params = new URLSearchParams();
+    if (orderRange.from) {
+      params.set("from", new Date(`${orderRange.from}T00:00:00`).toISOString());
+    }
+    if (orderRange.to) {
+      params.set("to", new Date(`${orderRange.to}T23:59:59.999`).toISOString());
+    }
+    if (orderRange.status) params.set("status", orderRange.status);
+    const query = params.toString();
+    return query ? `?${query}` : "";
+  }
+
+  function orderRangeLabel() {
+    const parts = [];
+    if (orderRange.status) parts.push(orderRange.status);
+    if (orderRange.from && orderRange.to) parts.push(`${orderRange.from} to ${orderRange.to}`);
+    else if (orderRange.from) parts.push(`from ${orderRange.from}`);
+    else if (orderRange.to) parts.push(`through ${orderRange.to}`);
+    return parts.join(" · ");
+  }
+
+  function orderDateFilters() {
+    const active = orderRange.from || orderRange.to || orderRange.status;
+    const kind = orderFilterKind;
+    return `<div class="order-filters">
+      <span class="filters-label">Filters</span>
+      <select id="orderFilterKind" aria-label="Filter by" onchange="setOrderFilterKind(this.value)">
+        <option value="" ${kind ? "" : "selected"}>Filter by…</option>
+        <option value="date" ${kind === "date" ? "selected" : ""}>Date</option>
+        <option value="status" ${kind === "status" ? "selected" : ""}>Status</option>
+      </select>
+      ${
+        kind === "date"
+          ? `<label class="date-field">From <input type="date" id="orderFrom" value="${esc(orderRange.from)}" /></label>
+             <span class="date-sep" aria-hidden="true">to</span>
+             <label class="date-field">To <input type="date" id="orderTo" value="${esc(orderRange.to)}" /></label>`
+          : ""
+      }
+      ${
+        kind === "status"
+          ? `<select id="orderStatusFilter" aria-label="Order status" onchange="applyOrderRange()">
+              <option value="" ${orderRange.status ? "" : "selected"}>Any status</option>
+              ${ORDER_STATUSES.map(
+                (s) => `<option value="${s}" ${orderRange.status === s ? "selected" : ""}>${s}</option>`,
+              ).join("")}
+            </select>`
+          : ""
+      }
+      ${kind === "date" ? `<button type="button" class="btn btn-secondary btn-sm" onclick="applyOrderRange()">Show</button>` : ""}
+      ${active ? `<button type="button" class="btn btn-secondary btn-sm" onclick="clearOrderRange()">Clear</button>` : ""}
+    </div>`;
+  }
+
+  async function setOrderFilterKind(kind) {
+    const had = orderRange.from || orderRange.to || orderRange.status;
+    orderFilterKind = kind;
+    orderRange = { from: "", to: "", status: "" };
+    if (had) {
+      await runSave(async () => {
+        await refreshAll();
+        if (currentView === "orders" && !editing) await render();
+      });
+      return;
+    }
+    const host = document.querySelector(".order-filters");
+    if (host) host.outerHTML = orderDateFilters();
+  }
+
+  async function applyOrderRange() {
+    const kind = $("#orderFilterKind")?.value || orderFilterKind;
+    const from = kind === "date" ? $("#orderFrom")?.value || "" : "";
+    const to = kind === "date" ? $("#orderTo")?.value || "" : "";
+    const status = kind === "status" ? $("#orderStatusFilter")?.value || "" : "";
+    if (from && to && from > to) {
+      toast("The start date must be on or before the end date.", "error");
+      return;
+    }
+    orderFilterKind = kind;
+    orderRange = { from, to, status };
+    await runSave(async () => {
+      await refreshAll();
+      if (currentView === "orders" && !editing) await render();
+    });
+  }
+
+  async function clearOrderRange() {
+    orderFilterKind = "";
+    orderRange = { from: "", to: "", status: "" };
+    await runSave(async () => {
+      await refreshAll();
+      if (currentView === "orders" && !editing) await render();
+    });
+  }
+
   function listToolbar(tbodyId, count, viewKey) {
+    const bulk = BULK_DELETE[viewKey];
+    const selected = bulk ? selectedIds[viewKey].size : 0;
     return `<div class="panel-toolbar">
       <div class="toolbar-left">
-        <div class="search"><span>⌕</span><input placeholder="Search…" oninput="filterTable(this.value,'${tbodyId}')" /></div>
-        <span class="muted">${count} entries found</span>
+        <div class="search"><span>⌕</span><input placeholder="Search…" oninput="filterTable(this.value,'${tbodyId}','${viewKey}')" /></div>
+        <span class="muted" data-bulk-count="${viewKey}">${selected ? `${selected} selected` : `${count} entries found`}</span>
       </div>
-      <div class="toolbar-right">${transferBar(viewKey)}</div>
+      ${viewKey === "orders" ? orderDateFilters() : ""}
+      <div class="toolbar-right">
+        ${
+          bulk
+            ? `<button type="button" class="btn btn-danger btn-sm" data-bulk-delete="${viewKey}" ${selected ? "" : "hidden"} onclick="deleteSelected('${viewKey}')">Delete selected</button>`
+            : ""
+        }
+        ${transferBar(viewKey)}
+      </div>
     </div>`;
   }
 
@@ -396,7 +632,7 @@
           ])}
           <div class="full field"><label>Status</label>
             <select id="oStatus" class="strapi-input" onchange="setOrderStatus('${o.id}', this.value)">
-              ${["placed", "paid", "pending", "completed", "cancelled"]
+              ${ORDER_STATUSES
                 .map(
                   (s) =>
                     `<option value="${s}" ${o.orderStatus === s ? "selected" : ""}>${s}</option>`,
@@ -553,11 +789,12 @@
     </aside>`;
   }
 
-  function filterTable(q, tbodyId) {
+  function filterTable(q, tbodyId, viewKey) {
     const needle = q.trim().toLowerCase();
     document.querySelectorAll(`#${tbodyId} tr`).forEach((tr) => {
       tr.style.display = !needle || tr.textContent.toLowerCase().includes(needle) ? "" : "none";
     });
+    if (viewKey && BULK_DELETE[viewKey]) syncBulkUi(viewKey);
   }
 
   async function reasonPrompt(message) {
@@ -952,7 +1189,7 @@
     return {
       hero_secondary_cta: "Bulk pricing",
       hero_secondary_href: "/wholesale",
-      categories_title: "Browse by Category",
+      categories_title: "Browse by Kind",
       new_arrivals_title: "New Arrivals",
       new_arrivals_limit: 8,
       featured_title: "Featured",
@@ -1122,7 +1359,7 @@
           <h2>Section titles</h2>
           <p class="muted">Headings and how many products to show.</p>
           <div class="form-grid">
-            <div class="full field"><label>Categories title</label><input id="hpCatTitle" value="${esc(hp.categories_title || "")}" /></div>
+            <div class="full field"><label>Kinds title</label><input id="hpCatTitle" value="${esc(hp.categories_title || "")}" /></div>
             <div class="field"><label>New arrivals title</label><input id="hpNewTitle" value="${esc(hp.new_arrivals_title || "")}" /></div>
             <div class="field"><label>New arrivals limit</label><input id="hpNewLimit" type="number" min="1" value="${esc(hp.new_arrivals_limit ?? 8)}" /></div>
             <div class="field"><label>Featured title</label><input id="hpFeatTitle" value="${esc(hp.featured_title || "")}" /></div>
@@ -1423,6 +1660,12 @@
 
   Object.assign(window, {
     filterTable,
+    setOrderFilterKind,
+    applyOrderRange,
+    clearOrderRange,
+    toggleRowSelect,
+    toggleSelectVisible,
+    deleteSelected,
     navigate,
     saveProduct,
     deleteProduct,
@@ -1480,6 +1723,10 @@
     addMediaRow,
     addProductVariantRow,
     removeProductVariantRow,
+    generateProductVariants,
+    toggleGenAttr,
+    syncGenCount,
+    applyGenDefaultsToDrafts,
     syncProductVariantOptions,
     onUploadToRow,
     onUploadMany,
@@ -1614,7 +1861,32 @@
     );
   }
 
-  function productVariantCardHtml(key, categoryId) {
+  function productVariantCardHtml(key, categoryId, preset) {
+    const combo = preset?.combo || [];
+    const price = preset?.price ?? 1;
+    const stock = preset?.stock ?? 1;
+    const media = `${photosFieldHtml(`pvPhotos-${key}`, [])}${videosFieldHtml(`pvVideos-${key}`, [])}`;
+    if (combo.length) {
+      const ids = combo.map((c) => c.id).join(",");
+      const labels = combo.map((c) => c.label).join(" · ");
+      const comboKey = [...combo.map((c) => c.id)].sort().join("|");
+      return `<article class="pv-card pv-card-compact" data-key="${key}" data-combo="${esc(comboKey)}" data-value-ids="${esc(ids)}" data-value-labels="${esc(combo.map((c) => c.label).join("||"))}">
+        <div class="pv-compact">
+          <div class="field"><label>${req("Item code")}</label>
+            <input class="pv-code" placeholder="Auto from name + options if empty" />
+          </div>
+          <div class="pv-combo-chip">${esc(labels)}</div>
+          <div class="field"><label>${req("Price for one")}</label>
+            <input class="pv-price" type="number" min="1" step="1" value="${esc(price)}" required />
+          </div>
+          <div class="field"><label>${req("Stock")}</label>
+            <input class="pv-stock" type="number" min="1" step="1" value="${esc(stock)}" required />
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="removeProductVariantRow(this)">Remove</button>
+        </div>
+        <details class="pv-more"><summary>Photos &amp; videos (optional)</summary>${media}</details>
+      </article>`;
+    }
     return `<article class="pv-card" data-key="${key}">
       <div class="pv-card-head">
         <strong>New variant</strong>
@@ -1625,10 +1897,10 @@
           <input class="pv-code" placeholder="Auto from name + options if empty" />
         </div>
         <div class="field"><label>${req("Price for one")}</label>
-          <input class="pv-price" type="number" min="1" step="1" value="1" required />
+          <input class="pv-price" type="number" min="1" step="1" value="${esc(price)}" required />
         </div>
         <div class="field"><label>${req("Stock")}</label>
-          <input class="pv-stock" type="number" min="1" step="1" value="1" required />
+          <input class="pv-stock" type="number" min="1" step="1" value="${esc(stock)}" required />
         </div>
         <div class="pv-span">${photosFieldHtml(`pvPhotos-${key}`, [])}</div>
         <div class="pv-span">${videosFieldHtml(`pvVideos-${key}`, [])}</div>
@@ -1637,6 +1909,208 @@
         </div>
       </div>
     </article>`;
+  }
+
+  function kindHasOptionValues(kind) {
+    if (!kind) return false;
+    const allowed = kindAttributeIds(kind);
+    return cache.attributes.some(
+      (a) => allowed.has(a.id) && (a.values || []).length,
+    );
+  }
+
+  function comboKeyFromIds(ids) {
+    return [...ids].filter(Boolean).sort().join("|");
+  }
+
+  function savedComboKeys(productId) {
+    return new Set(
+      variantsForProduct(productId).map((v) =>
+        comboKeyFromIds(
+          (v.optionValues || []).map(
+            (ov) => ov.attributeValueId || ov.attributeValue?.id,
+          ),
+        ),
+      ),
+    );
+  }
+
+  function draftComboKeys() {
+    return new Set(
+      [...document.querySelectorAll(".pv-card")]
+        .map((card) => {
+          if (card.dataset.combo) return card.dataset.combo;
+          return comboKeyFromIds(
+            [...card.querySelectorAll(".pv-opt:checked")].map((el) => el.value),
+          );
+        })
+        .filter(Boolean),
+    );
+  }
+
+  function productVariantGeneratorHtml(categoryId, selectedIds) {
+    const kind = kindForCategory(categoryId);
+    if (!kind) {
+      return `<p class="muted">Choose a category first. Options come from that category's product kind.</p>`;
+    }
+    const allowed = kindAttributeIds(kind);
+    const attrs = cache.attributes.filter((a) => allowed.has(a.id));
+    if (!attrs.length) {
+      return `<p class="muted">${esc(kind.name)} has no options yet. Use “Add one variant” for a single SKU.</p>`;
+    }
+    const chosen = selectedIds instanceof Set ? selectedIds : new Set();
+    return attrs
+      .map((a) => {
+        const values = a.values || [];
+        if (!values.length) {
+          return `<div class="pv-gen-attr"><strong>${esc(a.name)}</strong><p class="muted">No values yet. Add them under Options.</p></div>`;
+        }
+        return `<div class="pv-gen-attr">
+          <div class="pv-gen-attr-head">
+            <strong>${esc(a.name)}</strong>
+            <button type="button" class="pv-gen-link" onclick="toggleGenAttr('${a.id}', true)">All</button>
+            <button type="button" class="pv-gen-link" onclick="toggleGenAttr('${a.id}', false)">None</button>
+          </div>
+          <div class="check-row">
+            ${values
+              .map((val) => {
+                const hex =
+                  val.meta && typeof val.meta === "object" ? val.meta.hex : "";
+                const swatch = hex
+                  ? `<span class="opt-swatch" style="background:${esc(hex)}"></span>`
+                  : "";
+                const checked = chosen.has(val.id) ? "checked" : "";
+                return `<label><input class="pv-gen-opt" data-attr="${a.id}" type="checkbox" value="${val.id}" ${checked} onchange="syncGenCount()" /> ${swatch}${esc(val.label)}</label>`;
+              })
+              .join("")}
+          </div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  function selectedGenGroups() {
+    const byAttr = new Map();
+    document.querySelectorAll(".pv-gen-opt:checked").forEach((el) => {
+      const attrId = el.dataset.attr;
+      if (!byAttr.has(attrId)) byAttr.set(attrId, []);
+      const label = (el.closest("label")?.textContent || "").trim();
+      byAttr.get(attrId).push({ id: el.value, label });
+    });
+    return [...byAttr.values()];
+  }
+
+  function cartesianCombos(groups) {
+    if (!groups.length) return [];
+    return groups.reduce((acc, group) => {
+      if (!group.length) return acc;
+      if (!acc.length) return group.map((item) => [item]);
+      return acc.flatMap((combo) => group.map((item) => [...combo, item]));
+    }, []);
+  }
+
+  function genComboCount() {
+    const groups = selectedGenGroups();
+    if (!groups.length) return 0;
+    return groups.reduce((n, g) => n * g.length, 1);
+  }
+
+  function syncGenCount() {
+    const n = genComboCount();
+    const btn = $("#pvGenBtn");
+    if (!btn) return;
+    btn.textContent = n
+      ? `Create ${n} variant${n === 1 ? "" : "s"}`
+      : "Create variants";
+  }
+
+  function toggleGenAttr(attrId, on) {
+    document
+      .querySelectorAll(`.pv-gen-opt[data-attr="${attrId}"]`)
+      .forEach((el) => {
+        el.checked = !!on;
+      });
+    syncGenCount();
+  }
+
+  function applyGenDefaultsToDrafts() {
+    const price = $("#pvGenPrice")?.value;
+    const stock = $("#pvGenStock")?.value;
+    let n = 0;
+    document.querySelectorAll(".pv-card").forEach((card) => {
+      const priceEl = card.querySelector(".pv-price");
+      const stockEl = card.querySelector(".pv-stock");
+      if (price && priceEl) priceEl.value = price;
+      if (stock && stockEl) stockEl.value = stock;
+      n += 1;
+    });
+    if (!n) {
+      toast("Create variants first, then apply price and stock.", "error");
+      return;
+    }
+    toast(`Applied to ${n} draft${n === 1 ? "" : "s"}`);
+  }
+
+  function generateProductVariants() {
+    const groups = selectedGenGroups();
+    if (!groups.length) {
+      showFormError(
+        "Tick at least one option you sell — for example every size and color — then create the combinations.",
+      );
+      return;
+    }
+    const list = $("#pvList");
+    if (!list) return;
+    const combos = cartesianCombos(groups);
+    const productId =
+      editing?.type === "product" && editing.id ? editing.id : null;
+    const used = new Set([...savedComboKeys(productId), ...draftComboKeys()]);
+    const price = Number($("#pvGenPrice")?.value);
+    const stock = Number($("#pvGenStock")?.value);
+    if (!Number.isFinite(price) || price < 1) {
+      showFormError("Price for each new variant must be at least 1.");
+      return;
+    }
+    if (!Number.isFinite(stock) || stock < 1) {
+      showFormError("Stock for each new variant must be at least 1.");
+      return;
+    }
+    let added = 0;
+    let skipped = 0;
+    for (const combo of combos) {
+      const key = comboKeyFromIds(combo.map((c) => c.id));
+      if (used.has(key)) {
+        skipped += 1;
+        continue;
+      }
+      used.add(key);
+      pvKeySeq += 1;
+      list.insertAdjacentHTML(
+        "beforeend",
+        productVariantCardHtml(pvKeySeq, $("#fCategory")?.value, {
+          combo,
+          price,
+          stock,
+        }),
+      );
+      added += 1;
+    }
+    clearFormError();
+    if (!added) {
+      toast(
+        skipped
+          ? "Those combinations are already listed."
+          : "Nothing new to create.",
+        "error",
+      );
+      return;
+    }
+    toast(
+      skipped
+        ? `Added ${added} draft${added === 1 ? "" : "s"} · ${skipped} already listed`
+        : `Added ${added} draft${added === 1 ? "" : "s"}`,
+    );
+    list.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   function addProductVariantRow() {
@@ -1655,6 +2129,22 @@
 
   function syncProductVariantOptions() {
     const categoryId = $("#fCategory")?.value;
+    const gen = $("#pvGenOptions");
+    if (gen) {
+      const selected = new Set(
+        [...document.querySelectorAll(".pv-gen-opt:checked")].map((el) => el.value),
+      );
+      gen.innerHTML = productVariantGeneratorHtml(categoryId, selected);
+      syncGenCount();
+    }
+    document.querySelectorAll(".pv-card-compact").forEach((card) => card.remove());
+    if (kindHasOptionValues(kindForCategory(categoryId))) {
+      document.querySelectorAll(".pv-card:not(.pv-card-compact)").forEach((card) => {
+        const picked = card.querySelector(".pv-opt:checked");
+        const typed = card.querySelector(".pv-code")?.value?.trim();
+        if (!picked && !typed) card.remove();
+      });
+    }
     document.querySelectorAll(".pv-card .pv-options").forEach((wrap) => {
       const selected = new Set(
         [...wrap.querySelectorAll(".pv-opt:checked")].map((el) => el.value),
@@ -1677,13 +2167,35 @@
     for (const card of document.querySelectorAll(".pv-card")) {
       const key = card.dataset.key;
       const typedCode = card.querySelector(".pv-code")?.value?.trim() || "";
-      const optionLabels = [...card.querySelectorAll(".pv-opt:checked")]
+      const fromDataIds = (card.dataset.valueIds || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const fromDataLabels = (card.dataset.valueLabels || "")
+        .split("||")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const radioLabels = [...card.querySelectorAll(".pv-opt:checked")]
         .map((el) => slugifyClient(el.closest("label")?.textContent))
         .filter(Boolean);
+      const optionLabels = fromDataLabels.length
+        ? fromDataLabels.map((label) => slugifyClient(label)).filter(Boolean)
+        : radioLabels;
+      const attributeValueIds = fromDataIds.length
+        ? fromDataIds
+        : [...card.querySelectorAll(".pv-opt:checked")].map((el) => el.value);
       const photoUrls = collectMediaUrls(`pvPhotos-${key}`);
       const videoUrls = collectMediaUrls(`pvVideos-${key}`);
       const isOnlyCard = document.querySelectorAll(".pv-card").length === 1;
-      if (!typedCode && !optionLabels.length && !photoUrls.length && !videoUrls.length && !isOnlyCard) {
+      const hasCombo = Boolean(fromDataIds.length);
+      if (
+        !typedCode &&
+        !optionLabels.length &&
+        !photoUrls.length &&
+        !videoUrls.length &&
+        !hasCombo &&
+        !isOnlyCard
+      ) {
         continue;
       }
       let itemCode = typedCode;
@@ -1711,9 +2223,7 @@
         howManyLeft,
         photoUrls,
         videoUrls,
-        attributeValueIds: [...card.querySelectorAll(".pv-opt:checked")].map(
-          (el) => el.value,
-        ),
+        attributeValueIds,
       });
     }
     return drafts;
@@ -1757,7 +2267,8 @@
     const categoryId = p?.category_id || p?.category?.id || "";
     const existing = p ? variantsForProduct(p.id) : [];
     pvKeySeq += 1;
-    const startWithDraft = !existing.length;
+    const hasOptions = kindHasOptionValues(kindForCategory(categoryId));
+    const startWithDraft = !existing.length && !hasOptions;
     return `<div class="edit-layout">
       <div class="panel">
         <div class="form-grid">
@@ -1782,10 +2293,25 @@
           </div>
           <div class="full field pv-section">
             <label>${req("Variants (SKUs)")}</label>
-            <p class="muted" style="margin:0 0 .65rem">Shoppers buy a variant — options, price, and stock — not the product name alone. Add at least one. Variant photos/videos are optional; otherwise the product media is used.</p>
+            <p class="muted" style="margin:0 0 .65rem">Shoppers buy a variant — options, price, and stock — not the product name alone. Tick every size, color, or other option you sell, set one price and stock, then create all combinations at once.</p>
             ${existingVariantsHtml(p?.id)}
+            <div class="pv-gen" id="pvGen">
+              <div id="pvGenOptions">${productVariantGeneratorHtml(categoryId, new Set())}</div>
+              <div class="pv-gen-defaults">
+                <div class="field"><label>Price for each new variant</label>
+                  <input id="pvGenPrice" type="number" min="1" step="1" value="1" />
+                </div>
+                <div class="field"><label>Stock for each new variant</label>
+                  <input id="pvGenStock" type="number" min="1" step="1" value="1" />
+                </div>
+              </div>
+              <div class="pv-gen-actions">
+                <button type="button" class="btn btn-primary btn-sm" id="pvGenBtn" onclick="generateProductVariants()">Create variants</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="applyGenDefaultsToDrafts()">Apply price &amp; stock to drafts</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addProductVariantRow()">Add one variant</button>
+              </div>
+            </div>
             <div id="pvList">${startWithDraft ? productVariantCardHtml(pvKeySeq, categoryId) : ""}</div>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="addProductVariantRow()">Add variant</button>
           </div>
           <input type="hidden" id="fPublished" value="${published ? "1" : "0"}" />
         </div>
@@ -2164,11 +2690,12 @@
         ${header("Product", `${cache.products.length} entries found`, `<button class="btn btn-primary" onclick="newProduct()">Create new entry</button>`)}
         <div class="panel">
           ${listToolbar("productsBody", cache.products.length, "products")}
-          <table class="cm"><thead><tr><th>Name</th><th>Category</th><th>Variants</th><th>Status</th></tr></thead>
+          <table class="cm"><thead><tr>${selectAllCell("products")}<th>Name</th><th>Category</th><th>Variants</th><th>Status</th></tr></thead>
           <tbody id="productsBody">
             ${cache.products
               .map(
-                (p) => `<tr class="clickable" onclick="editProduct('${p.id}')">
+                (p) => `<tr class="clickable${selectedIds.products.has(p.id) ? " is-selected" : ""}" onclick="editProduct('${p.id}')">
+              ${selectCell("products", p.id)}
               <td><strong>${esc(p.name)}</strong></td>
               <td>${esc(p.category?.name || "—")}${p.attribute_set?.name || p.category?.attribute_set?.name ? ` · ${esc(p.attribute_set?.name || p.category?.attribute_set?.name)}` : ""}</td>
               <td>${p.variants?.length || 0}</td>
@@ -2178,6 +2705,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("products");
       return;
     }
 
@@ -2194,7 +2722,7 @@
         ${header("Product variant", `${cache.variants.length} entries found`, `<button class="btn btn-primary" onclick="newVariant()">Create new entry</button>`)}
         <div class="panel">
           ${listToolbar("variantsBody", cache.variants.length, "variants")}
-          <table class="cm"><thead><tr><th>Item code</th><th>Product</th><th>Price</th><th>Stock</th><th>Options</th></tr></thead>
+          <table class="cm"><thead><tr>${selectAllCell("variants")}<th>Item code</th><th>Product</th><th>Price</th><th>Stock</th><th>Options</th></tr></thead>
           <tbody id="variantsBody">
             ${cache.variants
               .map((v) => {
@@ -2205,7 +2733,8 @@
                     .join(" · ") ||
                   [v.size, v.color].filter(Boolean).join(" · ") ||
                   "—";
-                return `<tr class="clickable" onclick="editVariant('${v.id}')">
+                return `<tr class="clickable${selectedIds.variants.has(v.id) ? " is-selected" : ""}" onclick="editVariant('${v.id}')">
+                ${selectCell("variants", v.id)}
                 <td><strong>${esc(v.itemCode)}</strong></td>
                 <td>${esc(v.product?.name || "")}</td>
                 <td>${v.priceForOne}</td>
@@ -2216,6 +2745,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("variants");
       return;
     }
 
@@ -2231,11 +2761,12 @@
         ${header("Category", `${cache.categories.length} entries found`, `<button class="btn btn-primary" onclick="newCategory()">Create new entry</button>`)}
         <div class="panel">
           ${listToolbar("categoriesBody", cache.categories.length, "categories")}
-          <table class="cm"><thead><tr><th>Name</th><th>Kind</th><th>Position</th><th>Status</th></tr></thead>
+          <table class="cm"><thead><tr>${selectAllCell("categories")}<th>Name</th><th>Kind</th><th>Position</th><th>Status</th></tr></thead>
           <tbody id="categoriesBody">
             ${cache.categories
               .map(
-                (c) => `<tr class="clickable" onclick="editCategory('${c.id}')">
+                (c) => `<tr class="clickable${selectedIds.categories.has(c.id) ? " is-selected" : ""}" onclick="editCategory('${c.id}')">
+              ${selectCell("categories", c.id)}
               <td><strong>${esc(c.name)}</strong></td>
               <td>${esc(kindNameForCategory(c) || "—")}</td>
               <td>${c.listPosition}</td>
@@ -2245,6 +2776,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("categories");
       return;
     }
 
@@ -2264,8 +2796,10 @@
           orderDetail(o);
         return;
       }
+      const range = orderRangeLabel();
+      const orderCount = cache.orders.length;
       root.innerHTML = `
-        ${header("Order", `${cache.orders.length} entries found`)}
+        ${header("Order", range ? `${orderCount} order${orderCount === 1 ? "" : "s"} ${range}` : `${orderCount} entries found`)}
         <div class="panel">
           ${listToolbar("ordersBody", cache.orders.length, "orders")}
           <table class="cm"><thead><tr><th>Reference</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th>Update</th></tr></thead>
@@ -2280,7 +2814,7 @@
               <td>${money(o.total)}</td>
               <td><span class="pill">${o.orderStatus}</span></td>
               <td><select class="strapi-input" style="width:auto" onclick="event.stopPropagation()" onchange="setOrderStatus('${o.id}', this.value)">
-                ${["placed", "paid", "pending", "completed", "cancelled"]
+                ${ORDER_STATUSES
                   .map(
                     (s) =>
                       `<option value="${s}" ${o.orderStatus === s ? "selected" : ""}>${s}</option>`,
@@ -2340,12 +2874,13 @@
       root.innerHTML = `
         ${header("Product kind", `${cache.sets.length} entries found`, `<button class="btn btn-primary" onclick="newKind()">Create new entry</button>`)}
         <div class="panel">
-          <div class="panel-toolbar"><div class="toolbar-left"><div class="search"><span>⌕</span><input placeholder="Search…" oninput="filterTable(this.value,'kindsBody')" /></div></div></div>
-          <table class="cm"><thead><tr><th>Name</th><th>Code</th><th>Options</th></tr></thead>
+          ${listToolbar("kindsBody", cache.sets.length, "kinds")}
+          <table class="cm"><thead><tr>${selectAllCell("kinds")}<th>Name</th><th>Code</th><th>Options</th></tr></thead>
           <tbody id="kindsBody">
             ${cache.sets
               .map(
-                (s) => `<tr class="clickable" onclick="editKind('${s.id}')">
+                (s) => `<tr class="clickable${selectedIds.kinds.has(s.id) ? " is-selected" : ""}" onclick="editKind('${s.id}')">
+              ${selectCell("kinds", s.id)}
               <td><strong>${esc(s.name)}</strong></td>
               <td>${esc(s.code)}</td>
               <td>${(s.attributes || []).map((m) => esc(m.attribute?.name)).filter(Boolean).join(", ")}</td>
@@ -2354,6 +2889,7 @@
               .join("")}
           </tbody></table>
         </div>`;
+      syncBulkUi("kinds");
       return;
     }
 

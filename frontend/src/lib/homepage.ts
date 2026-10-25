@@ -52,6 +52,15 @@ function mapPromoBanner(entity: StrapiEntity): PromoBanner | null {
   };
 }
 
+/** Older homepage content used a category heading for this section. */
+function kindSectionTitle(value: unknown): string {
+  const title = String(value ?? "").trim();
+  if (!title || title === "Browse by Category") {
+    return defaultHomepageContent.categoriesTitle;
+  }
+  return title;
+}
+
 function mergeWithDefaults(entity: StrapiEntity | null): HomepageContent {
   if (!entity) return defaultHomepageContent;
 
@@ -78,9 +87,7 @@ function mergeWithDefaults(entity: StrapiEntity | null): HomepageContent {
       String(entity.hero_secondary_href ?? "") ||
       defaultHomepageContent.heroSecondaryHref,
     features: features.length ? features : defaultHomepageContent.features,
-    categoriesTitle:
-      String(entity.categories_title ?? "") ||
-      defaultHomepageContent.categoriesTitle,
+    categoriesTitle: kindSectionTitle(entity.categories_title),
     newArrivalsTitle:
       String(entity.new_arrivals_title ?? "") ||
       defaultHomepageContent.newArrivalsTitle,

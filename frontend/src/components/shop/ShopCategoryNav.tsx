@@ -8,6 +8,7 @@ import type { Category } from "@/types/database";
 type Props = {
   categories: Category[];
   activeSlug?: string;
+  activeKindCode?: string;
   searchQuery?: string;
 };
 
@@ -64,6 +65,7 @@ function itemClass(active: boolean, tone: "browse" | "category" = "category") {
 export default function ShopCategoryNav({
   categories,
   activeSlug,
+  activeKindCode,
   searchQuery,
 }: Props) {
   const { t } = useT();
@@ -73,15 +75,22 @@ export default function ShopCategoryNav({
   const panelId = useId();
   const groups = groupByKind(categories);
   const activeCategory = categories.find((cat) => cat.slug === activeSlug);
+  const activeKindFromQuery = activeKindCode
+    ? categories.find((cat) => cat.attribute_set?.code === activeKindCode)
+        ?.attribute_set
+    : null;
   const activeKindKey = activeCategory
     ? (activeCategory.attribute_set?.id ?? "_other")
-    : null;
-  const activeKind = activeCategory?.attribute_set?.name;
-  const currentLabel = activeCategory?.name ?? t("shop.allProducts");
+    : (activeKindFromQuery?.id ?? null);
+  const activeKind =
+    activeCategory?.attribute_set?.name ?? activeKindFromQuery?.name;
+  const browsingAll = !activeSlug && !activeKindCode;
+  const currentLabel =
+    activeCategory?.name ?? activeKindFromQuery?.name ?? t("shop.allProducts");
 
   useEffect(() => {
     setOpen(false);
-  }, [activeSlug, searchQuery]);
+  }, [activeSlug, activeKindCode, searchQuery]);
 
   useEffect(() => {
     const stored = readCollapsed();
@@ -117,8 +126,8 @@ export default function ShopCategoryNav({
           </p>
           <Link
             href={shopHref(undefined, searchQuery)}
-            className={itemClass(!activeSlug, "browse")}
-            aria-current={!activeSlug ? "page" : undefined}
+            className={itemClass(browsingAll, "browse")}
+            aria-current={browsingAll ? "page" : undefined}
           >
             {t("shop.allProducts")}
           </Link>
@@ -128,6 +137,10 @@ export default function ShopCategoryNav({
           const headingId = `${idPrefix}-${group.key}`;
           const listId = `${headingId}-categories`;
           const isOpen = !collapsed.has(group.key);
+          const kindSelected =
+            !activeSlug &&
+            !!activeKindCode &&
+            group.items.some((cat) => cat.attribute_set?.code === activeKindCode);
           const countLabel =
             group.items.length === 1
               ? t("shop.oneCategory")
@@ -142,16 +155,23 @@ export default function ShopCategoryNav({
               <button
                 type="button"
                 id={headingId}
-                className="flex w-full items-start justify-between gap-2 rounded-lg px-1 py-0.5 text-left hover:bg-white/70"
+                className={`flex w-full items-start justify-between gap-2 rounded-lg px-1 py-0.5 text-left hover:bg-white/70 ${
+                  kindSelected ? "bg-white" : ""
+                }`}
                 aria-expanded={isOpen}
                 aria-controls={listId}
+                aria-current={kindSelected ? "page" : undefined}
                 onClick={() => toggleKind(group.key)}
               >
                 <span>
                   <span className="block text-[10px] font-semibold uppercase tracking-wider text-brand">
                     {t("shop.kind")}
                   </span>
-                  <span className="mt-0.5 block text-sm font-semibold leading-snug text-dark">
+                  <span
+                    className={`mt-0.5 block text-sm font-semibold leading-snug ${
+                      kindSelected ? "text-brand" : "text-dark"
+                    }`}
+                  >
                     {group.name || t("shop.other")}
                   </span>
                   {!isOpen && (

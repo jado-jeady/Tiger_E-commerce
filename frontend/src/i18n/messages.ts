@@ -61,6 +61,7 @@ export const en = {
     "Products in {name} — pick your options and quantity.",
   "shop.inCategoryKind":
     "Products in {name} · {kind} — pick your options and quantity.",
+  "shop.inKind": "Products in {name} — pick your options and quantity.",
   "shop.pickOptions":
     "Every product can have its own options (size, color, pack, storage…). Pick your options and quantity.",
   "shop.latestPieces": "The latest pieces marked as new.",
@@ -321,6 +322,7 @@ export const rw = {
     "Ibicuruzwa muri {name} — hitamo amahitamo n'umubare.",
   "shop.inCategoryKind":
     "Ibicuruzwa muri {name} · {kind} — hitamo amahitamo n'umubare.",
+  "shop.inKind": "Ibicuruzwa muri {name} — hitamo amahitamo n'umubare.",
   "shop.pickOptions":
     "Buri gicuruzwa gishobora kugira amahitamo yacyo (ingano, ibara, pack…). Hitamo amahitamo n'umubare.",
   "shop.latestPieces": "Ibicuruzwa bishya byagaragajwe nk'ibishya.",

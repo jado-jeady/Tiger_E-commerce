@@ -11,6 +11,9 @@ import {
   requireCategoryKind,
   syncProductsKindForCategory,
   allowedAttributeIdsForProduct,
+  uniqueProductLinkName,
+  uniqueCategoryLinkName,
+  uniqueVariantItemCode,
 } from "../lib/catalog.js";
 import { logPriceChanges, logStockChange, syncOrderStock } from "../services/orders.js";
 import { saveUpload } from "../services/upload.js";
@@ -58,6 +61,14 @@ function notFoundOrRethrow(reply: { code: (status: number) => { send: (body: unk
     return reply.code(404).send({ error: "That record was not found." });
   }
   throw error;
+}
+
+const bulkIdsBody = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(500),
+});
+
+function uniqueIds(ids: string[]) {
+  return [...new Set(ids)];
 }
 
 function uniqueCodes(labels: string[]): string[] {
@@ -375,7 +386,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const row = await prisma.category.create({
       data: {
         name: body.name,
-        linkName: slugify(body.name),
+        linkName: await uniqueCategoryLinkName(body.name),
         listPosition: body.listPosition ?? 0,
         photoUrl: body.photoUrl ?? null,
         published: body.published ?? false,
@@ -402,7 +413,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         where: { id },
         data: {
           ...body,
-          ...(body.name ? { linkName: slugify(body.name) } : {}),
+          ...(body.name ? { linkName: await uniqueCategoryLinkName(body.name, id) } : {}),
         },
         include: { attributeSet: true },
       });
@@ -424,6 +435,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return notFoundOrRethrow(reply, e);
     }
   });
+
+  app.post(
+    "/api/admin/categories/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const result = await prisma.category.deleteMany({ where: { id: { in: ids } } });
+      return { deleted: result.count, deletedIds: ids, failed: [] };
+    },
+  );
 
   // —— Options / values / kinds ——
   app.get("/api/admin/attributes", { preHandler: requireAdmin }, async () => {
@@ -669,6 +690,56 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post(
+    "/api/admin/attribute-sets/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request, reply) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const sets = await prisma.attributeSet.findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          name: true,
+          _count: { select: { categories: true } },
+        },
+      });
+      const found = new Map(sets.map((row) => [row.id, row]));
+      const failed: { id: string; name: string; error: string }[] = [];
+      const ok: string[] = [];
+      for (const id of ids) {
+        const row = found.get(id);
+        if (!row) {
+          failed.push({ id, name: id, error: "That product kind was not found." });
+          continue;
+        }
+        if (row._count.categories > 0) {
+          failed.push({
+            id,
+            name: row.name,
+            error: "Reassign or delete categories that use this product kind first.",
+          });
+          continue;
+        }
+        ok.push(id);
+      }
+      if (ok.length) {
+        await prisma.attributeSet.deleteMany({ where: { id: { in: ok } } });
+      }
+      if (!ok.length) {
+        const error =
+          failed.length === 1
+            ? `${failed[0].name}: ${failed[0].error}`
+            : `Could not delete ${failed.map((row) => row.name).join(", ")}. Reassign or delete categories that use those product kinds first.`;
+        return reply.code(400).send({ error, deleted: 0, deletedIds: [], failed });
+      }
+      return {
+        deleted: ok.length,
+        deletedIds: ok,
+        failed,
+      };
+    },
+  );
+
   // —— Products ——
   app.get("/api/admin/products", { preHandler: requireAdmin }, async () => {
     const rows = await prisma.product.findMany({
@@ -703,7 +774,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const row = await prisma.product.create({
       data: {
         name: body.name,
-        linkName: slugify(body.name),
+        linkName: await uniqueProductLinkName(body.name),
         description: body.description ?? null,
         photoUrl: media.photoUrl ?? null,
         extraPhotoUrls: media.extraPhotoUrls ?? [],
@@ -765,7 +836,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       where: { id },
       data: {
         ...rest,
-        ...(body.name ? { linkName: slugify(body.name) } : {}),
+        ...(body.name ? { linkName: await uniqueProductLinkName(body.name, id) } : {}),
         ...(attributeSetId ? { attributeSetId } : {}),
         ...media,
       },
@@ -783,6 +854,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return notFoundOrRethrow(reply, e);
     }
   });
+
+  app.post(
+    "/api/admin/products/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const result = await prisma.product.deleteMany({ where: { id: { in: ids } } });
+      return { deleted: result.count, deletedIds: ids, failed: [] };
+    },
+  );
 
   // —— Variants ——
   app.get("/api/admin/variants", { preHandler: requireAdmin }, async () => {
@@ -880,7 +961,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const row = await prisma.productVariant.create({
       data: {
         productId: body.productId,
-        itemCode: body.itemCode,
+        itemCode: await uniqueVariantItemCode(body.itemCode),
         priceForOne,
         priceForBulk,
         minQuantityForBulk: body.minQuantityForBulk ?? 10,
@@ -1033,7 +1114,9 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const row = await prisma.productVariant.update({
       where: { id },
       data: {
-        ...(body.itemCode ? { itemCode: body.itemCode } : {}),
+        ...(body.itemCode
+          ? { itemCode: await uniqueVariantItemCode(body.itemCode, id) }
+          : {}),
         ...(nextPriceForOne != null ? { priceForOne: nextPriceForOne } : {}),
         ...(body.priceForBulk !== undefined
           ? { priceForBulk: nextPriceForBulk ?? null }
@@ -1084,12 +1167,56 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post(
+    "/api/admin/variants/bulk-delete",
+    { preHandler: requireAdmin },
+    async (request) => {
+      const ids = uniqueIds(bulkIdsBody.parse(request.body).ids);
+      const result = await prisma.productVariant.deleteMany({
+        where: { id: { in: ids } },
+      });
+      return { deleted: result.count, deletedIds: ids, failed: [] };
+    },
+  );
+
   // —— Orders ——
-  app.get("/api/admin/orders", { preHandler: requireAdmin }, async () => {
+  app.get("/api/admin/orders", { preHandler: requireAdmin }, async (request, reply) => {
+    const query = z
+      .object({
+        from: z.string().optional(),
+        to: z.string().optional(),
+        status: z.enum(["placed", "paid", "pending", "completed", "cancelled"]).optional(),
+      })
+      .parse(request.query);
+    const createdAt: { gte?: Date; lte?: Date } = {};
+    if (query.from) {
+      const from = new Date(query.from);
+      if (Number.isNaN(from.getTime())) {
+        return reply.code(400).send({ error: "The start date is not valid." });
+      }
+      createdAt.gte = from;
+    }
+    if (query.to) {
+      const to = new Date(query.to);
+      if (Number.isNaN(to.getTime())) {
+        return reply.code(400).send({ error: "The end date is not valid." });
+      }
+      createdAt.lte = to;
+    }
+    if (createdAt.gte && createdAt.lte && createdAt.gte > createdAt.lte) {
+      return reply.code(400).send({ error: "The start date must be on or before the end date." });
+    }
+    const ranged = Boolean(createdAt.gte || createdAt.lte || query.status);
     const rows = await prisma.order.findMany({
+      where: ranged
+        ? {
+            ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
+            ...(query.status ? { orderStatus: query.status } : {}),
+          }
+        : undefined,
       include: { items: true },
       orderBy: { createdAt: "desc" },
-      take: 200,
+      take: ranged ? 2000 : 200,
     });
     return { data: rows };
   });

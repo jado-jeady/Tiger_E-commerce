@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
   output: "standalone",
   images: {
     loader: "custom",
-    loaderFile: "./src/cloudinaryLoader.ts",
+    loaderFile: "./cloudinaryLoader.ts",
     // Next.js 16 blocks localhost/private IPs (SSRF protection). Required for local Strapi.
     dangerouslyAllowLocalIP: process.env.NODE_ENV === "development",
     remotePatterns: [
